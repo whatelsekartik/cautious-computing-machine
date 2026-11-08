@@ -1,0 +1,42 @@
+# Local runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets / credentials
+.secrets/
+*.key
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# macOS
+.DS_Store
+._*
+*.app/
+
+# Local tooling runtime downloaded by the setup launcher
+tools/runtime/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Local media (never commit footage) — the bundled demo clip is the exception
+samples/*.mp4
+samples/*.avi
+samples/*.mov
+samples/*.mkv
+!samples/demo-street-traffic.avi

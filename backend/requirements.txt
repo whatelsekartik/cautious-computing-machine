@@ -1,0 +1,28 @@
+# CivicWatch AI Studio — runtime dependencies
+#
+# Versions were selected after checking compatibility in a Python 3.11
+# environment: numpy 2.x, OpenCV 4.10+/5.x, PyTorch 2.2+, Ultralytics 8.3+.
+# On Apple Silicon, pip resolves the arm64 macOS wheels; MPS support ships
+# with PyTorch 2.x and needs no extra package.
+#
+# Licensing note: Ultralytics YOLO (package and pretrained weights) is
+# AGPL-3.0. CivicWatch is therefore distributed under AGPL-3.0 as well.
+# See docs/PRIVACY_AND_LEGAL.md.
+
+# --- Web API ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9
+pydantic>=2.7,<3.0
+
+# --- Vision / AI (runs locally, CPU or Apple MPS) ---
+numpy>=1.26,<3.0
+opencv-python-headless>=4.10,<6.0
+torch>=2.2,<3.0
+torchvision>=0.17,<1.0
+ultralytics>=8.3,<9.0
+psutil>=5.9,<8.0
+
+# --- Reporting / storage / security ---
+reportlab>=4.1,<6.0
+cryptography>=42.0,<51.0
