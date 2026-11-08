@@ -39,7 +39,7 @@ setup, CivicWatch works fully offline.
    restricted areas. Each zone has its own dwell time and vehicle classes.
 3. **Video Analysis** → choose sampling and resolution, then **Start analysis**.
    Boxes and ByteTrack IDs appear on the annotated preview; progress, frame
-   counts and detection totals update live.
+   counts and detection totals update live (the demo clip takes under a minute).
 4. **Incidents** → open a candidate, look at the snapshot, clip and tracking ID,
    then **Confirm**, **Dismiss**, **Forward** or **Resolve** with a note.
 5. **Export** → filtered CSV for your register, or a signed-off PDF dossier.

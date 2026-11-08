@@ -6,8 +6,9 @@
   (`opencv_extra`), which is distributed under the Apache License 2.0.
 * Content: a short street scene (768×576, 10 fps, ~80 s) with pedestrians and
   passing vehicles; originally captured for pedestrian-tracking research.
-* Purpose: lets you try CivicWatch immediately after setup — around 45 seconds
-  of analysis on a Mac, and it produces a handful of trackable vehicles.
+* Purpose: lets you try CivicWatch immediately after setup — well under a
+  minute of analysis on a Mac at default sampling, and it produces a handful of
+  trackable vehicles and pedestrians.
 * **Not** for enforcement, adjudication, commercial model training, or any use
   beyond a functional demo. It shows identifiable members of the public, so
   treat it like any other CCTV clip: do not redistribute it as part of your own
