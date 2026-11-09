@@ -264,3 +264,20 @@ Apple GPU. Consequently:
   real double-click run needs a Mac.
 * No H.264 encoder was available, hence the documented `mp4v` limitation for
   annotated video.
+
+
+---
+
+## Cloud (Vercel) mode
+
+The full guide is [DEPLOYMENT_VERCEL.md](DEPLOYMENT_VERCEL.md). The three failures
+seen most often:
+
+| Symptom | Fix |
+| --- | --- |
+| `/api/health` → 503 `database: unreachable` | `DATABASE_URL` is wrong or TLS is not enabled. Try `tools/cloud_migrate.py --status` locally with the same URL; Supabase URLs usually need `?sslmode=require` and the pooler host/port. |
+| Upload fails instantly in the browser with a CORS error | The bucket's CORS policy does not permit your Vercel origin and `PUT`. Apply the policy in the deployment guide; no redeploy is needed. |
+| Jobs stay `queued` and no incidents arrive | No connector is online. Run `Start Cloud Connector.command` on the Mac, or `tools/connector.py --test` to check the URL and token. Check **Settings → Local connectors** for `online`. |
+
+Remember that camera capture, the zone editor and model installation are
+local-only; in cloud mode those pages explain the split instead of failing.

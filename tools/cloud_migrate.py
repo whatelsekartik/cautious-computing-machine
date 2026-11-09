@@ -27,7 +27,10 @@ def main() -> int:
     args = parser.parse_args()
 
     if not (os.environ.get("DATABASE_URL") or "").startswith(("postgres://", "postgresql://")):
-        print("DATABASE_URL must be a PostgreSQL URL (Supabase → Connection string).")
+        print("This tool manages the hosted PostgreSQL database.")
+        print("Set DATABASE_URL to a PostgreSQL URL, e.g.")
+        print("  postgresql://user:pass@host:5432/db?sslmode=require")
+        print("Standalone installs use SQLite in data/civicwatch.db and do not need it.")
         return 2
 
     from civicwatch import db
