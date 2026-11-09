@@ -192,6 +192,14 @@ Or connect the Git repository and let Vercel build on push. `vercel.json` uses:
 * `regions: ["bom1"]` — change this to the region closest to your database;
 * `Cache-Control: no-store` on `/api/*`, immutable caching on `/assets/*`.
 
+The static routes follow Vercel's legacy monorepo pattern (`@vercel/static-build`
+on a subdirectory project, `dest: /frontend/...`). If your project serves the
+build from the root instead and assets 404, replace the last three `routes`
+entries with `rewrites`: keep `{"source": "/api/(.*)", "destination": "/api/index.py"}`,
+add `{"source": "/assets/(.*)", "destination": "/assets/$1"}`, and finish with
+`{"source": "/(.*)", "destination": "/index.html"}`. Verify with
+`curl -I https://your-project.vercel.app/assets/<hashed-file>.js`.
+
 Sanity-check the mapping locally before deploying:
 
 ```bash
@@ -354,6 +362,8 @@ checklist in §6 on first deployment.
 | Jobs stay `queued` | No connector is online. Start `Start Cloud Connector.command` and check **Settings → Local connectors**. |
 | Pothole/waste never detects | Expected. Install real weights on the connector; they are never simulated. |
 | `/api/*` returns 413 | Body over 4 MB. Use direct upload; do not POST video through functions. |
+| Static site loads but `/assets/*.js` is 404 | Legacy `routes` mapping does not match your project layout. See the `rewrites` alternative in §6. |
+| Dashboard shows "that page does not exist" after sign-in | The SPA fallback is not reached (a route intercepted `/`). Ensure the catch-all route/rewrite maps to the built `index.html`. |
 
 ---
 
