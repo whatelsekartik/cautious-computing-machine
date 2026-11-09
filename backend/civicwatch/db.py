@@ -1,103 +1,127 @@
-"""SQLite access layer with a tiny forward-only migration runner."""
+"""Database facade: SQLite for standalone installs, PostgreSQL for cloud.
+
+The rest of the application talks to this module only. It exposes the same
+small surface it always has (``query``, ``query_one``, ``execute``,
+``executescript``, ``audit``, ``init_db``) and selects a backend from the
+environment:
+
+* ``CIVICWATCH_DB_BACKEND=sqlite|postgres`` — explicit choice, or
+* ``DATABASE_URL`` / ``SUPABASE_DB_URL`` starting with ``postgres://`` or
+  ``postgresql://`` — cloud mode, or
+* otherwise SQLite at ``<data>/civicwatch.db`` (the macOS launchers never set
+  either variable, so local behaviour is unchanged).
+
+Rows come back as plain ``dict`` for both SQLite and PostgreSQL; both support
+``row["column"]`` and ``row.get(...)``, which is all the service
+layer uses.
+"""
 
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
-from datetime import datetime, timezone
-from pathlib import Path
+import os
 from typing import Any, Iterable
 
 from .config import get_paths
+from .db_common import utc_now
 
-_lock = threading.RLock()
-_connection: sqlite3.Connection | None = None
-_db_path: Path | None = None
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+BACKENDS = ("sqlite", "postgres")
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    """Return a process-wide SQLite connection (FastAPI is single-process)."""
-    global _connection, _db_path
-    target = path or get_paths().db
-    with _lock:
-        if _connection is not None and _db_path == target:
-            return _connection
-        if _connection is not None:
-            _connection.close()
-        conn = sqlite3.connect(target, check_same_thread=False, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        _connection, _db_path = conn, target
-        return conn
+def database_url() -> str | None:
+    for key in ("DATABASE_URL", "SUPABASE_DB_URL", "POSTGRES_URL", "CIVICWATCH_DATABASE_URL"):
+        value = os.environ.get(key)
+        if value and value.strip():
+            return value.strip()
+    return None
 
 
-def db() -> sqlite3.Connection:
+def backend_name() -> str:
+    """Resolve the active backend without opening a connection."""
+    explicit = (os.environ.get("CIVICWATCH_DB_BACKEND") or "").strip().lower()
+    if explicit:
+        if explicit not in BACKENDS:
+            raise ValueError(
+                f"CIVICWATCH_DB_BACKEND must be one of {', '.join(BACKENDS)} (got {explicit!r})"
+            )
+        return explicit
+    url = database_url()
+    if url and url.split(":", 1)[0] in {"postgres", "postgresql"}:
+        return "postgres"
+    return "sqlite"
+
+
+_backend = None
+_backend_key: tuple[str, str | None] | None = None
+
+
+def _get_backend():
+    """Return the active backend object, rebuilding it if configuration changed."""
+    global _backend, _backend_key
+    name = backend_name()
+    key = (name, database_url() if name == "postgres" else None)
+    if _backend is None or _backend_key != key:
+        if _backend is not None:
+            try:
+                _backend.close()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
+        if name == "postgres":
+            from .db_postgres import PostgresBackend
+
+            _backend = PostgresBackend()
+        else:
+            from .db_sqlite import SqliteBackend
+
+            _backend = SqliteBackend()
+        _backend_key = key
+    return _backend
+
+
+def reset_connections() -> None:
+    """Close pooled connections (used by tests and after config changes)."""
+    global _backend, _backend_key
+    if _backend is not None:
+        try:
+            _backend.close()
+        except Exception:  # pragma: no cover
+            pass
+    _backend = None
+    _backend_key = None
+
+
+# --- connection / migration ------------------------------------------------
+
+def connect(path=None):
+    """Open (or reuse) a connection. ``path`` only applies to SQLite."""
+    return _get_backend().connect(path)
+
+
+def db():
     return connect()
 
 
-def init_db(path: Path | None = None) -> list[int]:
-    """Apply pending migrations. Idempotent and safe to call repeatedly."""
-    conn = connect(path)
-    migrations_dir = Path(__file__).resolve().parent / "migrations"
-    with _lock:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations ("
-            "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        conn.commit()
-        applied = {
-            row["version"] for row in conn.execute("SELECT version FROM schema_migrations")
-        }
-        newly: list[int] = []
-        for file in sorted(migrations_dir.glob("*.sql")):
-            try:
-                version = int(file.name.split("_", 1)[0])
-            except ValueError:
-                continue
-            if version in applied:
-                continue
-            script = file.read_text(encoding="utf-8")
-            conn.executescript(script)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                (version, utc_now()),
-            )
-            conn.commit()
-            newly.append(version)
-        return newly
-
-
-# --- small helpers -------------------------------------------------------
-
-
-def query(sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
-    with _lock:
-        return list(db().execute(sql, tuple(params)))
-
-
-def query_one(sql: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
-    with _lock:
-        return db().execute(sql, tuple(params)).fetchone()
-
-
-def execute(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
-    with _lock:
-        cur = db().execute(sql, tuple(params))
-        db().commit()
-        return cur
+def init_db(path=None) -> list[int]:
+    """Apply pending migrations for the active backend. Idempotent."""
+    return _get_backend().init_db(path)
 
 
 def executescript(script: str) -> None:
-    with _lock:
-        db().executescript(script)
-        db().commit()
+    _get_backend().executescript(script)
+
+
+# --- helpers ---------------------------------------------------------------
+
+def query(sql: str, params: Iterable[Any] = ()) -> list[Any]:
+    return _get_backend().query(sql, params)
+
+
+def query_one(sql: str, params: Iterable[Any] = ()):
+    return _get_backend().query_one(sql, params)
+
+
+def execute(sql: str, params: Iterable[Any] = ()):
+    return _get_backend().execute(sql, params)
 
 
 def audit(action: str, detail: dict[str, Any] | str | None = None, actor: str = "local") -> None:
@@ -109,5 +133,16 @@ def audit(action: str, detail: dict[str, Any] | str | None = None, actor: str = 
     )
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def row_to_dict(row) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def describe() -> dict[str, Any]:
+    """Non-secret description of where data is stored (for diagnostics)."""
+    name = backend_name()
+    if name == "postgres":
+        from .db_postgres import describe_url
+
+        return {"backend": "postgres", "target": describe_url(database_url() or "")}
+    paths = get_paths()
+    return {"backend": "sqlite", "target": str(paths.db)}

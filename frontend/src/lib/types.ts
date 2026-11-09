@@ -329,3 +329,55 @@ export type StreamEvent = {
   ts: number;
   data: Record<string, unknown>;
 };
+
+export type DeploymentMode = "local" | "cloud";
+
+export interface DeploymentCapabilities {
+  local_inference: boolean;
+  live_capture: boolean;
+  video_upload: boolean;
+  evidence_redirect: boolean;
+  connector: boolean;
+  exports: boolean;
+}
+
+export interface CloudConfig {
+  app: { name: string; version: string };
+  mode: DeploymentMode;
+  auth_required: boolean;
+  deployment: Record<string, unknown> | null;
+  capabilities: DeploymentCapabilities;
+  limits: {
+    max_upload_bytes: number;
+    max_json_request_bytes: number;
+    function_timeout_s: number;
+    incidents_per_batch: number;
+  };
+}
+
+export interface Connector {
+  id: string;
+  name: string;
+  notes: string | null;
+  status: string;
+  online: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+  version: string | null;
+  device: string | null;
+  capabilities: Record<string, unknown>;
+  models: Record<string, unknown>;
+  token?: string;
+}
+
+export interface AuthStatus {
+  mode: DeploymentMode;
+  auth_required: boolean;
+  authenticated: boolean;
+}
+
+export interface UploadTicket {
+  media_id: string;
+  key: string;
+  upload: { url: string; method: string; headers: Record<string, string>; key: string; expires_in: number };
+}

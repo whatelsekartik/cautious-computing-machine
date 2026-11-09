@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { eventStreamUrl } from "./api";
-import type { StreamEvent } from "./types";
+import { deployment, isCloud, loadDeployment, onDeploymentChange } from "./deployment";
+import type { CloudConfig, StreamEvent } from "./types";
 
 interface AsyncState<T> {
   data: T | null;
@@ -68,13 +69,24 @@ export function useAsync<T>(
   };
 }
 
-/** Live updates from the backend SSE stream (job progress, incidents, cameras). */
+/**
+ * Live updates from the backend SSE stream (job progress, incidents, cameras).
+ *
+ * Serverless functions cannot hold a long-lived SSE connection, so in cloud
+ * mode there is no stream at all: every page already refreshes on an interval,
+ * and `useLiveRefresh` falls back to polling. The hook still reports connected
+ * so the shell shows "polling" instead of a red offline light.
+ */
 export function useEventStream(onEvent: (event: StreamEvent) => void) {
   const [connected, setConnected] = useState(false);
   const handler = useRef(onEvent);
   handler.current = onEvent;
 
   useEffect(() => {
+    if (isCloud()) {
+      setConnected(true);
+      return;
+    }
     let source: EventSource | null = null;
     let retry: number | undefined;
     let disposed = false;
@@ -169,6 +181,11 @@ export function useLiveRefresh(refresh: () => void, types: string[] = ["job.upda
   const callback = useRef(refresh);
   callback.current = refresh;
   useEffect(() => {
+    if (isCloud()) {
+      // No SSE in serverless: refresh on a gentle interval instead.
+      const timer = window.setInterval(() => callback.current(), 15000);
+      return () => window.clearInterval(timer);
+    }
     let timer: number | undefined;
     const onEvent = (event: Event | MessageEvent) => {
       try {
@@ -188,4 +205,22 @@ export function useLiveRefresh(refresh: () => void, types: string[] = ["job.upda
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [types.join(",")]);
+}
+
+
+/** The deployment this bundle is talking to (local Mac or cloud dashboard). */
+export function useDeployment(): CloudConfig {
+  const [config, setConfig] = useState<CloudConfig>(deployment());
+  useEffect(() => {
+    let active = true;
+    void loadDeployment().then((loaded) => {
+      if (active) setConfig(loaded);
+    });
+    const unsubscribe = onDeploymentChange((loaded) => setConfig(loaded));
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+  return config;
 }

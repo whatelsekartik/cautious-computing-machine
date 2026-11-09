@@ -1,5 +1,12 @@
 # Architecture
 
+CivicWatch has two deployment shapes built from one codebase. The **standalone**
+shape is a single local process. The **cloud** shape splits the dashboard (Vercel
+functions + PostgreSQL + private object storage) from inference (a connector on
+the operator's Mac) and never moves video through the functions.
+
+## Mode A — standalone (default)
+
 CivicWatch is a single-process, local-first application: one FastAPI server owns
 the database, the inference pipeline and the built React frontend. There is no
 message broker, no worker fleet, no cloud storage — deliberately, because
@@ -29,6 +36,50 @@ FastAPI app (uvicorn, 127.0.0.1:8000)             │
    └── db            SQLite (WAL) + forward-only migrations
 ```
 
+## Mode B — cloud (hybrid)
+
+```
+Browser (same Vite bundle)                    Connector Mac
+   │ presigned PUT (video, no function)          │ Start Cloud Connector.command
+   │ fetch /api/... (session cookie + CSRF)      │ YOLO + ByteTrack + OpenCV + PyTorch
+   ▼                                            ▼
+Vercel static site  ──►  Python function (api/index.py)  ◄── HTTPS + Bearer (cwconn_…)
+                              │  fastapi, pg8000, boto3, reportlab only
+                              ├── cloud/auth.py     admin token → HMAC session cookie
+                              ├── cloud/api.py      dashboard + connector routers
+                              ├── cloud/service.py  incidents, uploads, assignments, models
+                              ├── storage.py        S3 presign PUT/GET, redirect access
+                              └── db.py → db_postgres.py (SQLite for local)
+                              │
+                    PostgreSQL          private S3-compatible bucket
+                 (incidents, jobs,      evidence/, media/, processed/
+                  connectors, audit)
+```
+
+* **No inference on Vercel.** `backend/requirements-cloud.txt` contains no
+  torch/OpenCV/numpy/ultralytics; the function imports only FastAPI, the DB and
+  storage adapters.
+* **Connector protocol** (`/api/connector/*`, Bearer):
+  `heartbeat` → `assignments` (claim queued jobs) → `evidence/upload-urls` →
+  `incidents` (idempotent on `client_incident_id`) → `processed/upload-url` →
+  `assignments/{id}` (progress/completion). Heartbeats report only models whose
+  weights exist on disk.
+* **Outbox.** `connector/outbox.py` copies each local incident once, retries
+  with backoff `5,15,45,120,300,900 s`, keeps failed rows, purges sent rows after
+  14 days and flags rows at 8 attempts. A crash or a day offline loses nothing.
+* **Duplicates.** Two layers: the outbox's unique `incident_id`, and the cloud's
+  unique `client_incident_id` (a replayed push returns `duplicates`).
+* **Storage boundary.** Evidence and video are private objects. The API answers
+  `302` to short-lived signed URLs; the connector's storage HTTP client carries
+  no token, so a presigned URL can never receive one.
+* **Frontend.** The bundle asks `/api/cloud/config` at boot. Cloud mode shows the
+  login gate, hides local-only pages, polls instead of using SSE, sends the CSRF
+  header on writes and uploads video directly to storage with XHR progress. The
+  local app answers `mode: "local"` and keeps SSE, cameras and the zone editor.
+
+See [DEPLOYMENT_VERCEL.md](DEPLOYMENT_VERCEL.md) for deployment, limits and the
+verification checklist.
+
 ## Request path and security
 
 * `LocalhostOnlyMiddleware` rejects any request whose socket peer is not
@@ -40,7 +91,16 @@ FastAPI app (uvicorn, 127.0.0.1:8000)             │
 * The SPA build is mounted at `/` with history fallback, so deep links such as
   `/incidents` work; `/api/**` is always matched first.
 
-## Database schema (migration 1)
+## Database schema (migrations 1–2)
+
+Dialect-specific SQL lives in `migrations/sqlite/` and `migrations/postgres/`;
+both are applied by the same forward-only runner and produce identical columns.
+
+Migration 2 adds the cloud columns and tables: `incidents.client_incident_id`,
+`origin`, `connector_id`, `snapshot_key`, `clip_key`, `preview_key`;
+`media.storage_key`, `content_type`, `origin`, `upload_status`, `uploaded_by`;
+`jobs.origin`, `connector_id`, `source_key`, `assigned_at`, `data_json`; plus
+`connectors`, `connector_models` and `connector_outbox`.
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
@@ -53,6 +113,9 @@ FastAPI app (uvicorn, 127.0.0.1:8000)             │
 | `incident_events` | immutable workflow trail | `incident_id`, `action`, `from_status`, `to_status`, `note`, `actor`, `created_at` |
 | `audit_log` | system-level actions | `action`, `detail` (redacted), `actor`, `created_at` |
 | `custom_models` | installed third-party weights | `id`, `name`, `family` (pothole/garbage/…), `path`, `enabled`, `classes` |
+| `connectors` | paired local machines (cloud) | `id`, `name`, `token_hash` (SHA-256), `status`, `last_seen_at`, `capabilities_json`, `models_json` |
+| `connector_models` | models reported installed on a connector | `connector_id`, `model_id`, `family`, `classes` |
+| `connector_outbox` | durable incident sync queue (local) | unique `incident_id`, `payload_json`, `status`, `attempts`, `next_attempt_at`, `sent_at`, `last_error` |
 
 Migrations are forward-only: `db.init_db()` creates `schema_migrations`, applies
 each `NNN_*.sql` in order inside a transaction and records the version. Running
@@ -130,6 +193,13 @@ React 19 + TypeScript + Tailwind 3 + Lucide, built by Vite into
 
 Generated from the running app (`GET /docs` is interactive). Summary:
 
+Cloud mode serves `GET /api/cloud/config`, the dashboard set below plus
+`GET/POST/DELETE /api/connectors`, `POST /api/media/upload-url`,
+`POST /api/media/{id}/complete`, `POST /api/jobs` (queue an assignment) and the
+connector protocol `/api/connector/{heartbeat,assignments,evidence/upload-urls,
+processed/upload-url,incidents,models,config}`. Local-only groups (models
+download/install, cameras, zones, events SSE, file streaming) are absent there.
+
 | Area | Endpoints |
 | --- | --- |
 | System | `GET /api/health`, `/api/overview`, `/api/system/info`, `/api/system/diagnostics`, `/api/audit`, `GET/PATCH /api/settings`, `POST /api/settings/reset/{key}`, `GET /api/storage`, `POST /api/storage/cleanup`, `POST /api/privacy/purge-evidence` |
@@ -165,3 +235,9 @@ Generated from the running app (`GET /docs` is interactive). Summary:
   robot camera becomes another capture adapter without touching the pipeline.
 * **New export** — `services/reports.py` builds PDFs from incident rows; add
   another formatter alongside CSV.
+* **New cloud storage** — implement the interface in `storage.py`
+  (`save_bytes`, `exists`, `read_bytes`, `presign_put`, `presign_get`,
+  `materialize`, `delete`); nothing else needs to change.
+* **New connector capability** — extend `capabilities()` in
+  `connector/worker.py` and report it in the heartbeat; the dashboard stores the
+  last report in `connectors.capabilities_json`.

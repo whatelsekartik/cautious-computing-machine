@@ -1,0 +1,14 @@
+# CivicWatch cloud (Vercel) dependencies — deliberately small.
+#
+# No torch, torchvision, ultralytics, opencv or numpy: the serverless functions
+# never run inference. The local connector installs backend/requirements.txt
+# instead and keeps all vision code on the operator's machine.
+#
+# Keep this file in sync with api/requirements.txt (Vercel installs the one at
+# the repository root).
+
+fastapi>=0.115,<1.0
+pydantic>=2.7,<3.0
+pg8000>=1.31,<2.0
+boto3>=1.34,<2.0
+reportlab>=4.1,<6.0

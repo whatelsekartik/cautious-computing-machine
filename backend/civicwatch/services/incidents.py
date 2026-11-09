@@ -9,12 +9,15 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the cloud API lean
+    from ..pipeline.rules import Violation
 
 from ..config import SAFETY_DISCLAIMER, get_paths
 from ..db import audit, execute, query, query_one, utc_now
-from ..detect.base import CATEGORY_LABELS
-from ..pipeline.rules import Violation
+from ..labels import CATEGORY_LABELS
+from ..storage import evidence_keys, get_storage, ref_available
 
 VALID_STATUSES = ("detected", "pending_review", "verified", "dismissed", "forwarded", "resolved")
 REVIEW_STATUSES = ("detected", "pending_review")
@@ -42,6 +45,13 @@ class IncidentDraft:
     snapshot_path: str | None = None
     clip_path: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    # Cloud ingestion adds these; standalone rows leave them empty.
+    client_incident_id: str | None = None
+    origin: str = "local"
+    connector_id: str | None = None
+    snapshot_key: str | None = None
+    clip_key: str | None = None
+    preview_key: str | None = None
 
 
 class IncidentService:
@@ -71,8 +81,9 @@ class IncidentService:
             """INSERT INTO incidents (
                 id, category, label, confidence, camera, location, captured_at, created_at,
                 updated_at, track_id, zone_id, zone_name, dwell_seconds, status, severity,
-                source_type, source_ref, class_name, snapshot_path, clip_path, evidence_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_type, source_ref, class_name, snapshot_path, clip_path, evidence_json,
+                client_incident_id, origin, connector_id, snapshot_key, clip_key, preview_key
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 draft.id,
                 draft.category,
@@ -95,6 +106,12 @@ class IncidentService:
                 draft.snapshot_path,
                 draft.clip_path,
                 json.dumps({"disclaimer": SAFETY_DISCLAIMER, **(draft.evidence or {})}),
+                draft.client_incident_id,
+                draft.origin,
+                draft.connector_id,
+                draft.snapshot_key,
+                draft.clip_key,
+                draft.preview_key,
             ),
         )
         execute(
@@ -158,8 +175,11 @@ class IncidentService:
             return None
         item = dict(row)
         item["evidence"] = json.loads(item.pop("evidence_json") or "{}")
-        item["has_snapshot"] = bool(item.get("snapshot_path")) and _exists(item["snapshot_path"])
-        item["has_clip"] = bool(item.get("clip_path")) and _exists(item["clip_path"])
+        refs = evidence_keys(item)
+        item["has_snapshot"] = ref_available(refs["snapshot"])
+        item["has_clip"] = ref_available(refs["clip"])
+        item["has_preview"] = ref_available(refs["preview"]) or item["has_snapshot"]
+        item["evidence_refs"] = refs
         item["events"] = [
             dict(event)
             for event in query(
@@ -235,8 +255,11 @@ class IncidentService:
         for row in rows:
             item = dict(row)
             item["evidence"] = json.loads(item.pop("evidence_json") or "{}")
-            item["has_snapshot"] = bool(item.get("snapshot_path")) and _exists(item["snapshot_path"])
-            item["has_clip"] = bool(item.get("clip_path")) and _exists(item["clip_path"])
+            refs = evidence_keys(item)
+            item["has_snapshot"] = ref_available(refs["snapshot"])
+            item["has_clip"] = ref_available(refs["clip"])
+            item["has_preview"] = ref_available(refs["preview"]) or item["has_snapshot"]
+            item["evidence_refs"] = refs
             items.append(item)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -305,18 +328,27 @@ class IncidentService:
         row = query_one("SELECT * FROM incidents WHERE id = ?", (incident_id,))
         if not row:
             raise KeyError("Incident not found")
-        for key in ("snapshot_path", "clip_path"):
-            path = row[key]
-            if path:
-                try:
-                    from pathlib import Path
+        storage = get_storage()
+        refs = evidence_keys(dict(row))
+        for ref in (refs["snapshot"], refs["clip"], refs["preview"]):
+            if ref:
+                storage.delete(ref)
+        if not storage.remote:
+            for key in ("snapshot_path", "clip_path"):
+                path = row[key]
+                if path:
+                    try:
+                        from pathlib import Path
 
-                    Path(path).unlink(missing_ok=True)
-                    parent = Path(path).parent
-                    if parent.exists() and parent != get_paths().evidence and not any(parent.iterdir()):
-                        parent.rmdir()
-                except OSError:
-                    pass
+                        parent = Path(path).parent
+                        if (
+                            parent.exists()
+                            and parent != get_paths().evidence
+                            and not any(parent.iterdir())
+                        ):
+                            parent.rmdir()
+                    except OSError:
+                        pass
         execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
         audit("incident.deleted", {"id": incident_id})
 
@@ -378,8 +410,8 @@ class IncidentService:
                     f"{row['dwell_seconds']:.1f}" if row["dwell_seconds"] else "",
                     row["track_id"] if row["track_id"] is not None else "",
                     row["source_type"],
-                    row["snapshot_path"] or "",
-                    row["clip_path"] or "",
+                    evidence_keys(dict(row))["snapshot"] or "",
+                    evidence_keys(dict(row))["clip"] or "",
                     SAFETY_DISCLAIMER,
                 ]
             )

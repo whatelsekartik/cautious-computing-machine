@@ -27,11 +27,11 @@ by `tools/diagnostics.py` on the target machine — never assumed. See
 ```
 cd backend && ../.venv/bin/python -m pytest
 ...
-70 passed, 1 warning in 10.57s
+107 passed, 47 warnings in 28.94s
 ```
 
-The single warning is Starlette's deprecation notice about `httpx` in
-`TestClient` (third-party), not a CivicWatch defect.
+The warnings are deprecations from third-party packages (`httpx` inside
+Starlette's `TestClient`, FastAPI's `on_event`), not CivicWatch defects.
 
 | Module | Tests | Covers |
 | --- | --- | --- |
@@ -43,7 +43,11 @@ The single warning is Starlette's deprecation notice about `httpx` in
 | `test_jobs_pipeline.py` | 9 | upload → zone → job → evidence → export → delete, progress/frame counters, stub detector, annotated output, deletion of a running job |
 | `test_cameras_security.py` | 10 | Fernet round-trip, key permissions (600), redaction filter, loopback middleware, credential masking, authorisation requirement |
 | `test_settings_zones_system.py` | 10 | settings validation/coercion/reset, zone CRUD and defaults, overview counters, storage report, diagnostics, model catalogue, forced weight re-download |
-| `test_launchers.py` | 10 | every `.command` parses (`bash -n`) and is executable, shared helpers present, Setup covers all prerequisites, browser opens only after health, diagnostics JSON structure, model check fails cleanly |
+| `test_launchers.py` | 13 | every `.command` parses (`bash -n`) and is executable, shared helpers present, Setup covers all prerequisites, browser opens only after health, diagnostics JSON structure, model check fails cleanly, cloud connector launcher keeps its token out of git |
+| `test_cloud_storage.py` | 5 | local/S3 selection, presigned PUT + GET against a real S3 endpoint (moto), signed and time-limited URLs, private-bucket behaviour, evidence key derivation |
+| `test_postgres_backend.py` | 6 | real PostgreSQL 16: migrations 1–2 and schema parity, incident workflow + ILIKE search, ID reservation, connector ingestion and deduplication, credential rejection, URL password masking |
+| `test_cloud_api.py` | 15 | health/config, session login + CSRF, connector lifecycle, model reporting, direct upload → queue → assignment, evidence redirects, exports, 413 guard, security headers, corrupt-evidence PDF |
+| `test_connector_sync.py` | 8 | connector ↔ cloud over real HTTP: heartbeat, evidence upload, duplicate replay, offline buffering/backoff/recovery, revoked token, credential isolation, a full locally-processed assignment |
 
 Test design notes:
 
@@ -59,9 +63,9 @@ Test design notes:
 
 ```
 cd frontend && npx vitest run
-Test Files  3 passed (3)
-     Tests  14 passed (14)
-  Duration  2.59s
+Test Files  4 passed (4)
+     Tests  20 passed (20)
+  Duration  3.62s
 ```
 
 | Spec | Tests | Covers |
@@ -69,6 +73,7 @@ Test Files  3 passed (3)
 | `format.test.ts` | 4 | durations (short/long), byte sizes, status/category label mapping, percentages and timestamps |
 | `api.test.ts` | 4 | export URLs with filters, zone/stream URL construction, backend error surfacing, JSON bodies |
 | `ui.test.tsx` | 6 | status badges and tones, progress bar width, toggle interaction, modal visibility, toasts |
+| `deployment.test.ts` | 6 | local fallback when `/api/cloud/config` is absent, cloud capabilities, single fetch, CSRF header only on cloud writes, local requests stay header-free, direct-upload presign → PUT → complete flow |
 
 ## Type check and production build
 
@@ -76,13 +81,36 @@ Test Files  3 passed (3)
 cd frontend && npx tsc -b          # exit 0, no diagnostics
 cd frontend && npx vite build
 dist/index.html                   0.78 kB │ gzip:   0.48 kB
-dist/assets/index-CZPid2PV.css   24.05 kB │ gzip:   5.79 kB
-dist/assets/index-cz6N8CzW.js   397.89 kB │ gzip: 118.33 kB
+dist/assets/index-r9tgs2ra.css   24.57 kB │ gzip:   5.91 kB
+dist/assets/index-D8LjPpBc.js   417.69 kB │ gzip: 124.01 kB
 ```
+
+The bundle grew by ~20 kB when the cloud UI (login gate, connectors card, direct
+upload) was added; local pages are still included and unchanged.
 
 The build is then served by FastAPI; the running instance returned `200` for
 `/`, `/incidents` (SPA fallback), `/api/overview`, `/api/incidents` and the
 hashed JS/CSS assets.
+
+## Cloud / hybrid mode
+
+Executed in this workspace on 2026-11-08:
+
+| Check | Result |
+| --- | --- |
+| Clean virtualenv with **only** `backend/requirements-cloud.txt` | `from civicwatch.cloud.app import create_cloud_app` succeeds; `torch`, `cv2`, `numpy`, `ultralytics`, `lap`, `pandas` all absent from `sys.modules` |
+| Cloud + storage suites in that clean venv | `20 passed` (`test_cloud_api.py`, `test_cloud_storage.py`) — the production dependency set is genuinely sufficient |
+| Installed cloud packages | 28 distributions, ~57 MB (botocore, reportlab, Pillow dominate); app code 1.3 MB — far below Vercel's 250 MB unzipped limit |
+| PostgreSQL | real PostgreSQL 16.2 (pgserver): migrations `[1, 2]`, schema parity with SQLite, full incident workflow, connector ingestion/dedupe |
+| S3 storage | real S3 endpoint (moto server): presigned PUT/GET, signed + ≤15 min URLs, HEAD existence checks, `302` evidence redirects |
+| Connector end-to-end | background uvicorn cloud server + real `CloudClient`: heartbeat, evidence upload, duplicate replay, offline → backoff → recovery, revoked token, and a cloud assignment downloaded, processed locally (YOLO) and reported `completed` |
+| Credential isolation | RTSP URL stored encrypted on the "Mac"; outbox payloads and dashboard copies contain no `rtsp://`, username, password or connector token |
+| Local mode unchanged | `create_app()` serves `/api/cloud/config` (`mode: local`, `local_inference: true`), `/api/health`, `/api/overview`, `/api/settings`, `/api/jobs`, `/api/incidents`; all 70 original tests still pass |
+| Launchers | all five `.command` files parse (`bash -n`) and are executable; `Start Cloud Connector.command` saves credentials with mode 600 into a git-ignored file |
+
+Not verifiable here: an actual Vercel deployment, Supabase connectivity and
+provider-specific CORS (no network access to those services). The deployment
+guide includes a post-deploy checklist that covers exactly those items.
 
 ## Real end-to-end inference (no stubs)
 
@@ -123,7 +151,7 @@ inference yolov8n on cpu · 110 ms/frame · JPEG encoded   ok
 
 ## Shell launchers
 
-* `bash -n` passes for all four `.command` files and `launchers/lib/common.sh`
+* `bash -n` passes for all five `.command` files and `launchers/lib/common.sh`
   (also enforced by `test_launchers.py`).
 * `chmod +x` verified by test (`os.access(..., os.X_OK)`).
 * `tools/dev.sh` syntax-checked; it is not executed here because it would

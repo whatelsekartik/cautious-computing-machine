@@ -30,6 +30,42 @@ router = APIRouter()
 # --------------------------------------------------------------------------
 
 
+@router.get("/cloud/config")
+def deployment_config() -> dict[str, Any]:
+    """Deployment capabilities, also served by the cloud build.
+
+    The frontend calls this on boot to decide which pages it can offer, so the
+    same bundle works in standalone and hosted mode.
+    """
+    return {
+        "app": {"name": APP_NAME, "version": APP_VERSION},
+        "mode": "local",
+        "auth_required": False,
+        "deployment": {
+            "mode": "local",
+            "database": "sqlite",
+            "storage": {"kind": "local", "remote": False},
+            "inference": "local",
+            "capabilities": {
+                "local_inference": True,
+                "live_capture": True,
+                "video_upload": True,
+                "evidence_redirect": False,
+                "connector": True,
+                "exports": True,
+            },
+        },
+        "capabilities": {
+            "local_inference": True,
+            "live_capture": True,
+            "video_upload": True,
+            "evidence_redirect": False,
+            "connector": True,
+            "exports": True,
+        },
+    }
+
+
 @router.get("/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": APP_NAME, "version": APP_VERSION}

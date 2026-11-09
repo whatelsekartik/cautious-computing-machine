@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { PageHeader } from "../components/AppShell";
+import { ConnectorsCard } from "../components/ConnectorsCard";
 import {
   Badge,
   Button,
@@ -37,11 +38,12 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { useAsync } from "../lib/hooks";
-import type { Diagnostics, Settings } from "../lib/types";
+import type { CloudConfig, Diagnostics, Settings } from "../lib/types";
 import { useToast } from "../components/Toast";
 import { formatBytes, formatDateTime } from "../lib/format";
 
-export function SettingsPage() {
+export function SettingsPage({ deployment }: { deployment: CloudConfig }) {
+  const cloud = deployment.mode === "cloud";
   const toast = useToast();
   const settings = useAsync(() => api.settings(), []);
   const models = useAsync(() => api.models(), [], { intervalMs: 2000 });
@@ -195,7 +197,11 @@ export function SettingsPage() {
       <PageHeader
         eyebrow="Configuration"
         title="Settings"
-        description="Hardware, AI models, detection thresholds and privacy controls. Changes apply to new jobs and camera sessions."
+        description={
+          cloud
+            ? "Dashboard, storage, privacy and connector settings. Detection thresholds are applied by the local connector; inference never runs here."
+            : "Hardware, AI models, detection thresholds and privacy controls. Changes apply to new jobs and camera sessions."
+        }
         actions={
           <>
             <Button size="sm" variant="ghost" disabled={!dirty} onClick={() => setDraft(settings.data!.values)}>
@@ -214,6 +220,8 @@ export function SettingsPage() {
           </>
         }
       />
+
+      {cloud ? <ConnectorsCard /> : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
         <div className="space-y-4">
@@ -273,6 +281,8 @@ export function SettingsPage() {
             )}
           </Card>
 
+          {!cloud ? (
+          <>
           <Card>
             <SectionHeader
               title="AI detection model"
@@ -451,6 +461,9 @@ export function SettingsPage() {
               </Button>
             </div>
           </Card>
+
+          </>
+          ) : null}
 
           <Card>
             <SectionHeader title="Detection & tracking" subtitle="Applies to new processing runs." />
@@ -710,7 +723,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {models.data && (models.data.custom ?? []).length === 0 ? (
+      {!cloud && models.data && (models.data.custom ?? []).length === 0 ? (
         <div className="mt-4">
           <EmptyState
             icon={ShieldCheck}

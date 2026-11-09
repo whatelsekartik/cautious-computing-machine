@@ -21,6 +21,7 @@ LAUNCHERS = [
     "Start CivicWatch.command",
     "Stop CivicWatch.command",
     "Create CivicWatch App.command",
+    "Start Cloud Connector.command",
 ]
 
 
@@ -109,3 +110,27 @@ def test_model_check_fails_cleanly_when_nothing_is_installed(tmp_path: Path) -> 
     assert result.returncode == 1
     assert "not installed" in result.stdout
     assert "Traceback" not in result.stderr
+
+
+def test_cloud_connector_launcher_uses_the_repo_tool_and_keeps_secrets_out_of_git() -> None:
+    launcher = (REPO / "Start Cloud Connector.command").read_text(encoding="utf-8")
+    assert "tools/connector.py" in launcher
+    assert "CIVICWATCH_CLOUD_URL" in launcher
+    assert "CIVICWATCH_CONNECTOR_TOKEN" in launcher
+    # The token is read silently and saved with 0600, never echoed in full.
+    assert "read -r -s TOKEN" in launcher
+    assert "chmod 600" in launcher
+    ignore = (REPO / ".gitignore").read_text(encoding="utf-8")
+    assert "config/connector.env" in ignore
+
+
+def test_connector_env_file_is_never_committed() -> None:
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "config/connector.env"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 128:  # not a git checkout (tarball install)
+        pytest.skip("not running inside a git checkout")
+    assert result.returncode == 0, "config/connector.env must be git-ignored"

@@ -3,8 +3,19 @@
 **Local-first civic monitoring for a municipality's own cameras and video files.**
 Upload or point CivicWatch at footage, and it finds *potential* parking and
 obstruction violations, packages each one with evidence, and puts it in front of
-a human for a decision. Nothing is uploaded, nothing is auto-fined, and no cloud
-service is involved — every frame is processed on the Mac it runs on.
+a human for a decision. Nothing is auto-fined and no cloud service is required —
+every frame is processed on the Mac it runs on.
+
+It ships in two modes built from the same code:
+
+* **Standalone local (default).** Everything on the Mac: SQLite, local files,
+  cameras, inference, dashboard. Works offline after setup.
+* **Cloud (hybrid).** Dashboard and API on Vercel with PostgreSQL and private
+  object storage; YOLO/ByteTrack still run on a **local connector** that pushes
+  incidents over authenticated HTTPS. Camera streams never leave your network.
+
+See **[docs/DEPLOYMENT_VERCEL.md](docs/DEPLOYMENT_VERCEL.md)** for the hosted
+mode. The local launchers are unchanged by it.
 
 > Automated output is a **signal for human review**, not a legal finding.
 > CivicWatch never issues challans or penalties, performs no face recognition,
@@ -60,6 +71,20 @@ setup, CivicWatch works fully offline.
 Design: warm off-white surfaces, muted teal accents, thin borders, rounded
 cards, system fonts, a real dark mode (toggle in the header, remembered per
 browser). It looks like municipal operations software, not a demo.
+
+### Two modes, one bundle
+
+| | Standalone local | Cloud (hybrid) |
+| --- | --- | --- |
+| Start it with | `Start CivicWatch.command` | Vercel URL + `Start Cloud Connector.command` |
+| Database | SQLite (`data/civicwatch.db`) | PostgreSQL / Supabase |
+| Evidence | files in `data/evidence/` | private S3-compatible bucket, presigned URLs |
+| Inference | on the Mac, in the app | on the Mac, in the connector |
+| Live monitoring | yes | yes, but only on the connector Mac |
+
+The frontend asks `/api/cloud/config` which mode it is in and hides controls that
+only work locally. `/api/cloud/config` on the local app answers `mode: "local"`;
+the Vercel deployment answers `mode: "cloud"`.
 
 ### Detection
 
@@ -141,6 +166,9 @@ applies because of the YOLO weights.
 ├── Start CivicWatch.command        start server, wait for health, open browser
 ├── Stop CivicWatch.command         graceful shutdown
 ├── Create CivicWatch App.command   optional CivicWatch.app builder
+├── Start Cloud Connector.command   sync a local Mac to a hosted dashboard
+├── api/index.py                    Vercel ASGI entry point (cloud mode)
+├── vercel.json                     Vercel builds, routes, headers
 ├── launchers/lib/common.sh         shared shell helpers (runtime discovery, health)
 ├── config/civicwatch.example.env   optional environment overrides
 ├── samples/demo-street-traffic.avi bundled demo clip (OpenCV sample data)
@@ -148,15 +176,24 @@ applies because of the YOLO weights.
 ├── tools/
 │   ├── diagnostics.py              full self-check + inference smoke test
 │   ├── download_models.py          download/validate model weights
+│   ├── cloud_migrate.py            database status + connector provisioning
+│   ├── connector.py                connector entry point (used by the launcher)
 │   └── dev.sh                      hot-reload developer launcher
 ├── backend/
-│   ├── requirements.txt            runtime dependencies
+│   ├── requirements.txt            runtime dependencies (local, includes PyTorch)
+│   ├── requirements-cloud.txt      cloud-only dependencies (no torch/OpenCV)
 │   ├── requirements-dev.txt        test dependencies
 │   ├── civicwatch/
 │   │   ├── main.py                 FastAPI app, redaction, loopback guard, SPA mount
 │   │   ├── config.py               paths, version, env overrides
-│   │   ├── db.py                   SQLite connection + migration runner
-│   │   ├── migrations/001_init.sql schema (9 tables + indexes)
+│   │   ├── db.py                   database facade (SQLite or PostgreSQL)
+│   │   ├── db_sqlite.py            SQLite backend
+│   │   ├── db_postgres.py          PostgreSQL backend (pg8000, Supabase-compatible)
+│   │   ├── storage.py              local files or S3, presigned upload/download
+│   │   ├── cloud/                  Vercel app: auth, dashboard API, connector protocol
+│   │   ├── connector/              local worker: outbox, retries, cloud client, CLI
+│   │   ├── migrations/sqlite/      schema for SQLite (001, 002)
+│   │   ├── migrations/postgres/    matching schema for PostgreSQL
 │   │   ├── security.py             Fernet credential vault, redaction, masking
 │   │   ├── settings_store.py       typed settings with validation
 │   │   ├── geometry.py             polygons, masks, IoU, containment
@@ -165,14 +202,14 @@ applies because of the YOLO weights.
 │   │   ├── pipeline/               engine, rules, annotate, evidence
 │   │   ├── services/               jobs, incidents, zones, cameras, reports, events, system
 │   │   └── api/                    system, sources, incidents routers
-│   └── tests/                      9 test modules (69 tests)
+│   └── tests/                      13 test modules (107 tests)
 ├── frontend/
 │   ├── src/pages/                  Overview, VideoAnalysis, LiveMonitoring,
 │   │                               ZoneEditor, Incidents, Settings
 │   ├── src/components/             AppShell, ui kit, drawer, toasts, accents
 │   ├── src/lib/                    API client, types, formatting, hooks
 │   └── src/test/                   vitest specs (14 tests)
-├── docs/                           architecture, security/legal, troubleshooting
+├── docs/                           architecture, deployment, security/legal, troubleshooting
 └── data/                           created at setup: db, media, evidence, models, logs
 ```
 
@@ -196,14 +233,19 @@ Advanced/portable setups can use the environment variables documented in
 The API schema is served at `/docs` and summarised in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#http-api).
 
+Cloud mode additionally uses `DATABASE_URL`, `CIVICWATCH_ADMIN_TOKEN`,
+`CIVICWATCH_S3_*` and (on the Mac) `CIVICWATCH_CLOUD_URL` /
+`CIVICWATCH_CONNECTOR_TOKEN`. See [`.env.example`](.env.example) and the
+[deployment guide](docs/DEPLOYMENT_VERCEL.md#5-environment-variables).
+
 ---
 
 ## Development and tests
 
 ```bash
 tools/dev.sh                               # backend :8000 + Vite :5173 with reload
-cd backend && ../.venv/bin/python -m pytest        # API, rules, tracker, evidence, launchers
-cd frontend && npx vitest run                       # formatting, API client, UI kit
+cd backend && ../.venv/bin/python -m pytest        # 107 tests, incl. Postgres/S3/cloud/connector
+cd frontend && npx vitest run                       # formatting, API client, deployment, UI kit
 cd frontend && npx tsc -b && npx vite build         # typecheck + production build
 .venv/bin/python tools/diagnostics.py               # full environment + inference check
 ```
@@ -238,6 +280,12 @@ including which checks could not run in the Linux build sandbox.
   default) is the main speed lever.
 * The bundled `samples/demo-street-traffic.avi` is sample data from the OpenCV
   project, suitable for a demo only — not for any enforcement decision.
+* **Cloud mode never runs inference.** Serverless functions have a 60-second
+  limit and no GPU, so video processing is delegated to the connector; a
+  deployment without a running connector shows queued jobs and no new incidents.
+  Evidence is capped at 4 GB per upload and JSON bodies at 4 MB.
+* **Vercel Blob is not used** (presigned direct upload is not part of its API);
+  any S3-compatible bucket works. See the deployment guide for CORS setup.
 
 ---
 

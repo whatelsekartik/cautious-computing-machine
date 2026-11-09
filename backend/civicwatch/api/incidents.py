@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from ..config import SAFETY_DISCLAIMER, get_paths
 from ..db import audit
 from ..services.incidents import VALID_STATUSES, IncidentService
 from ..services.reports import build_incident_report
+from ..storage import StorageError, evidence_keys, get_storage
 from ..settings_store import all_settings
 
 router = APIRouter()
@@ -154,41 +155,85 @@ def delete_incident(incident_id: str) -> dict[str, Any]:
 
 
 @router.get("/incidents/{incident_id}/snapshot")
-def snapshot(incident_id: str) -> FileResponse:
+def snapshot(incident_id: str, download: bool = False):
     incident = IncidentService.get(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    path = _safe_evidence_path(incident.get("snapshot_path"))
-    if not path:
-        raise HTTPException(status_code=404, detail="No snapshot stored for this incident")
-    return FileResponse(path, media_type="image/jpeg", filename=f"{incident_id}.jpg")
+    return _evidence_response(
+        evidence_keys(incident)["snapshot"],
+        media_type="image/jpeg",
+        filename=f"{incident_id}.jpg",
+        download=download,
+        missing="No snapshot stored for this incident",
+    )
 
 
 @router.get("/incidents/{incident_id}/clip")
-def clip(incident_id: str) -> FileResponse:
+def clip(incident_id: str, download: bool = False):
     incident = IncidentService.get(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    path = _safe_evidence_path(incident.get("clip_path"))
-    if not path:
-        raise HTTPException(status_code=404, detail="No clip stored for this incident")
-    return FileResponse(path, media_type="video/mp4", filename=f"{incident_id}.mp4")
+    return _evidence_response(
+        evidence_keys(incident)["clip"],
+        media_type="video/mp4",
+        filename=f"{incident_id}.mp4",
+        download=download,
+        missing="No clip stored for this incident",
+    )
 
 
 @router.get("/incidents/{incident_id}/preview")
-def preview(incident_id: str) -> FileResponse:
+def preview(incident_id: str):
     incident = IncidentService.get(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    clip_path = incident.get("clip_path")
-    if clip_path:
-        gif = Path(clip_path).with_name("preview.gif")
-        if gif.exists():
-            return FileResponse(gif, media_type="image/gif", filename=f"{incident_id}.gif")
-    path = _safe_evidence_path(incident.get("snapshot_path"))
-    if path:
-        return Response(content=path.read_bytes(), media_type="image/jpeg")
+    refs = evidence_keys(incident)
+    storage = get_storage()
+    if refs["preview"] and (storage.remote or _safe_evidence_path(refs["preview"])):
+        return _evidence_response(
+            refs["preview"],
+            media_type="image/gif",
+            filename=f"{incident_id}.gif",
+            download=False,
+            missing="No preview available",
+        )
+    if refs["snapshot"]:
+        return _evidence_response(
+            refs["snapshot"],
+            media_type="image/jpeg",
+            filename=f"{incident_id}.jpg",
+            download=False,
+            missing="No preview available",
+        )
     raise HTTPException(status_code=404, detail="No preview available")
+
+
+def _evidence_response(
+    ref: str | None,
+    *,
+    media_type: str,
+    filename: str,
+    download: bool,
+    missing: str,
+):
+    """Serve local evidence or redirect to a short-lived presigned URL."""
+    if not ref:
+        raise HTTPException(status_code=404, detail=missing)
+    storage = get_storage()
+    if storage.remote:
+        try:
+            url = storage.presign_get(
+                ref,
+                filename=filename,
+                disposition="attachment" if download else "inline",
+            )
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail=f"Evidence storage unavailable: {exc}") from exc
+        return RedirectResponse(url, status_code=302, headers={"Cache-Control": "private, max-age=60"})
+    path = _safe_evidence_path(ref)
+    if not path:
+        raise HTTPException(status_code=404, detail=missing)
+    return FileResponse(path, media_type=media_type, filename=filename)
 
 
 def _safe_evidence_path(raw: str | None) -> Path | None:

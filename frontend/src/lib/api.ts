@@ -1,5 +1,9 @@
+import { isCloud } from "./deployment";
 import type {
+  AuthStatus,
   BuiltinModel,
+  CloudConfig,
+  Connector,
   DeviceInfo,
   Camera,
   CategoryStatus,
@@ -12,6 +16,7 @@ import type {
   Overview,
   Settings,
   StorageInfo,
+  UploadTicket,
   Zone,
   ZoneKind,
   ZoneRules,
@@ -27,10 +32,17 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method || "GET").toUpperCase();
+  const mutating = !["GET", "HEAD", "OPTIONS"].includes(method);
   const response = await fetch(path, {
     ...init,
+    // The cloud deployment authenticates with an HttpOnly session cookie.
+    credentials: "same-origin",
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      // Cookie-authenticated writes additionally require this header, which a
+      // cross-site form cannot set (CSRF defence in cloud mode).
+      ...(mutating && isCloud() ? { "X-CivicWatch-CSRF": "1" } : {}),
       ...(init?.headers || {}),
     },
   });
@@ -80,6 +92,25 @@ export interface IncidentQuery {
 
 export const api = {
   health: () => request<{ status: string }>("/api/health"),
+  cloudConfig: () => request<CloudConfig>("/api/cloud/config"),
+
+  auth: {
+    status: () => request<AuthStatus>("/api/auth/status"),
+    login: (token: string) =>
+      request<{ ok: boolean; expires_at: string }>("/api/auth/session", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }),
+    logout: () => request<{ ok: boolean }>("/api/auth/session", { method: "DELETE" }),
+  },
+
+  connectors: {
+    list: () => request<{ items: Connector[] }>("/api/connectors"),
+    create: (payload: { name: string; notes?: string }) =>
+      request<Connector>("/api/connectors", { method: "POST", body: JSON.stringify(payload) }),
+    remove: (id: string) =>
+      request<{ ok: boolean }>(`/api/connectors/${id}`, { method: "DELETE" }),
+  },
   overview: () => request<Overview>("/api/overview"),
   systemInfo: () => request<Record<string, unknown>>("/api/system/info"),
   diagnostics: () => request<Diagnostics>("/api/system/diagnostics"),
@@ -129,6 +160,43 @@ export const api = {
 
   media: {
     list: () => request<{ items: Media[] }>("/api/media"),
+    /**
+     * Cloud upload: ask the backend for a presigned PUT, send the file straight
+     * to object storage (never through a serverless function), then mark it
+     * ready. Large videos therefore do not hit the 4.5 MB function limit.
+     */
+    uploadDirect: async (file: File, onProgress?: (fraction: number) => void) => {
+      const ticket = await request<UploadTicket>("/api/media/upload-url", {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          content_type: file.type || "video/mp4",
+          size_bytes: file.size,
+        }),
+      });
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(ticket.upload.method || "PUT", ticket.upload.url);
+        Object.entries(ticket.upload.headers || {}).forEach(([key, value]) =>
+          xhr.setRequestHeader(key, value),
+        );
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new ApiError(`Storage rejected the upload (${xhr.status})`, xhr.status));
+        };
+        xhr.onerror = () =>
+          reject(new ApiError("Upload failed — check the storage CORS settings", 0));
+        xhr.send(file);
+      });
+      const ready = await request<{ media_id: string; status: string }>(
+        `/api/media/${ticket.media_id}/complete`,
+        { method: "POST" },
+      );
+      return { ...ticket, ...ready };
+    },
     upload: (file: File, location?: string) => {
       const form = new FormData();
       form.append("file", file);

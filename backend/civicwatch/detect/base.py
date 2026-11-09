@@ -7,29 +7,26 @@ from typing import Protocol, Sequence
 
 import numpy as np
 
-# COCO classes we care about for civic monitoring.
-VEHICLE_CLASSES: frozenset[str] = frozenset({"car", "motorcycle", "bus", "truck", "bicycle"})
-PERSON_CLASSES: frozenset[str] = frozenset({"person"})
-# Wide vehicles that physically block a footpath or carriageway.
-BULKY_CLASSES: frozenset[str] = frozenset({"car", "bus", "truck", "motorcycle"})
+# Labels and class sets are defined once in ``civicwatch.labels`` so the cloud
+# API can import them without pulling in NumPy. They are re-exported here for
+# the inference modules that have always imported them from this module.
+from ..labels import (  # noqa: E402  (kept below the numpy import on purpose)
+    BULKY_CLASSES,
+    CATEGORY_LABELS,
+    PERSON_CLASSES,
+    VEHICLE_CLASSES,
+    VEHICLE_LABELS,
+)
 
-VEHICLE_LABELS = {
-    "car": "Car",
-    "motorcycle": "Motorcycle",
-    "bus": "Bus",
-    "truck": "Truck",
-    "bicycle": "Bicycle",
-    "person": "Pedestrian",
-}
-
-CATEGORY_LABELS = {
-    "illegal_parking": "Potential illegal parking",
-    "double_parking": "Potential double parking",
-    "footpath_obstruction": "Potential footpath obstruction",
-    "restricted_entry": "Potential restricted-zone entry",
-    "pothole": "Potential pothole",
-    "garbage": "Potential garbage accumulation",
-}
+__all__ = [
+    "BULKY_CLASSES",
+    "CATEGORY_LABELS",
+    "PERSON_CLASSES",
+    "VEHICLE_CLASSES",
+    "VEHICLE_LABELS",
+    "Detection",
+    "Detector",
+]
 
 
 @dataclass(frozen=True)

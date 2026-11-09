@@ -1,0 +1,7 @@
+# Vercel also accepts requirements.txt next to the function; keep it identical
+# to backend/requirements-cloud.txt (see that file for the rationale).
+fastapi>=0.115,<1.0
+pydantic>=2.7,<3.0
+pg8000>=1.31,<2.0
+boto3>=1.34,<2.0
+reportlab>=4.1,<6.0

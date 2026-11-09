@@ -67,6 +67,9 @@ def clean_state():
         "cameras",
         "settings",
         "audit_log",
+        "connector_models",
+        "connector_outbox",
+        "connectors",
     ):
         db_module.execute(f"DELETE FROM {table}")
     for directory in (get_paths().media, get_paths().evidence, get_paths().processed):
@@ -76,6 +79,9 @@ def clean_state():
             else:
                 entry.unlink(missing_ok=True)
     settings_store._cache = None
+    from civicwatch.storage import reset_storage
+
+    reset_storage()
     yield
 
 
@@ -107,3 +113,112 @@ def sample_video() -> Path:
     assert path.exists()
     yield path
     path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Cloud fixtures: S3-compatible storage (moto) and the cloud API
+# ---------------------------------------------------------------------------
+
+ADMIN_TOKEN = "test-dashboard-token"
+CONNECTOR_HEADERS = {"X-CivicWatch-CSRF": "1"}
+
+
+@pytest.fixture
+def s3_bucket(monkeypatch):
+    """A real S3 endpoint (moto server) with a private bucket."""
+    pytest.importorskip("moto.server", reason="moto is required for storage tests")
+    from moto.server import ThreadedMotoServer
+
+    server = ThreadedMotoServer(ip_address="127.0.0.1", port=0)
+    server.start()
+    host, port = server.get_host_and_port()
+    endpoint = f"http://{host}:{port}"
+    bucket = "civicwatch-test"
+    import boto3
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id="test-key",
+        aws_secret_access_key="test-secret",
+        region_name="us-east-1",
+    )
+    client.create_bucket(Bucket=bucket)
+    monkeypatch.setenv("CIVICWATCH_S3_BUCKET", bucket)
+    monkeypatch.setenv("CIVICWATCH_S3_REGION", "us-east-1")
+    monkeypatch.setenv("CIVICWATCH_S3_ENDPOINT", endpoint)
+    monkeypatch.setenv("CIVICWATCH_S3_ACCESS_KEY_ID", "test-key")
+    monkeypatch.setenv("CIVICWATCH_S3_SECRET_ACCESS_KEY", "test-secret")
+    monkeypatch.setenv("CIVICWATCH_S3_FORCE_PATH_STYLE", "1")
+    monkeypatch.setenv("CIVICWATCH_STORAGE", "s3")
+    from civicwatch.storage import reset_storage
+
+    reset_storage()
+    yield {"endpoint": endpoint, "bucket": bucket, "client": client}
+    server.stop()
+    reset_storage()
+
+
+@pytest.fixture
+def cloud_env(monkeypatch, s3_bucket):
+    monkeypatch.setenv("CIVICWATCH_MODE", "cloud")
+    monkeypatch.setenv("CIVICWATCH_ADMIN_TOKEN", ADMIN_TOKEN)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CIVICWATCH_DB_BACKEND", "sqlite")
+    from civicwatch import db
+
+    db.reset_connections()
+    yield {"token": ADMIN_TOKEN, "s3": s3_bucket}
+    db.reset_connections()
+
+
+@pytest.fixture
+def admin_headers():
+    return {"Authorization": f"Bearer {ADMIN_TOKEN}", "X-CivicWatch-CSRF": "1"}
+
+
+@pytest.fixture
+def cloud_client(cloud_env):
+    from fastapi.testclient import TestClient
+
+    from civicwatch.cloud.app import create_cloud_app
+
+    app = create_cloud_app()
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.fixture
+def cloud_server(cloud_env):
+    """A real HTTP server so the connector can be tested over the network."""
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from civicwatch.cloud.app import create_cloud_app
+
+    app = create_cloud_app()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    import httpx
+
+    base_url = f"http://127.0.0.1:{port}"
+    for _ in range(200):
+        try:
+            if httpx.get(base_url + "/api/health", timeout=0.5).status_code == 200:
+                break
+        except Exception:  # noqa: BLE001
+            time.sleep(0.05)
+    else:  # pragma: no cover
+        server.should_exit = True
+        raise RuntimeError("cloud test server did not start")
+    yield {"base_url": base_url, "port": port}
+    server.should_exit = True
+    thread.join(timeout=10)

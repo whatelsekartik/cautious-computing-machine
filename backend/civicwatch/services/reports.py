@@ -12,6 +12,7 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from ..storage import StorageError, evidence_keys, get_storage
 from reportlab.platypus import (
     Image,
     KeepTogether,
@@ -237,15 +238,40 @@ def _incident_block(index: int, incident: dict[str, Any], styles) -> KeepTogethe
         )
     )
     elements: list[Any] = [heading, table]
-    image_path = incident.get("snapshot_path")
-    if image_path and Path(image_path).exists():
+    snapshot_ref = evidence_keys(incident)["snapshot"]
+    if snapshot_ref:
         try:
-            elements.append(Spacer(1, 4))
-            elements.append(Image(str(image_path), width=88 * mm, height=None, kind="proportional"))
-            elements.append(Paragraph("Evidence frame captured at detection time.", styles["small"]))
-        except Exception:  # pragma: no cover - unreadable image
-            pass
+            image_path = get_storage().materialize(snapshot_ref)
+        except Exception:  # noqa: BLE001 - a missing image must not break the report
+            image_path = None
+        if image_path and Path(image_path).exists() and _readable_image(image_path):
+            try:
+                elements.append(Spacer(1, 4))
+                elements.append(
+                    Image(str(image_path), width=88 * mm, height=None, kind="proportional")
+                )
+                elements.append(
+                    Paragraph("Evidence frame captured at detection time.", styles["small"])
+                )
+            except Exception:  # pragma: no cover - unreadable image
+                pass
     return KeepTogether(elements)
+
+
+def _readable_image(path: str | Path) -> bool:
+    """Reject truncated evidence before reportlab sees it.
+
+    A connector may upload a file whose extension says JPEG while the bytes are
+    incomplete; the PDF must still render, just without that frame.
+    """
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(path) as probe:
+            probe.load()
+        return True
+    except Exception:  # noqa: BLE001 - unreadable evidence is not fatal
+        return False
 
 
 def build_csv(incident_ids: Sequence[str] | None = None) -> str:

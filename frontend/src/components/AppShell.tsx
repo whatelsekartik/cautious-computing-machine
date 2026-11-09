@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { BrandMark } from "./Accents";
 import { Dot } from "./ui";
-import { useTheme, useEventStream } from "../lib/hooks";
+import { useTheme, useEventStream, useDeployment } from "../lib/hooks";
 import { api } from "../lib/api";
 import type { DeviceInfo } from "../lib/types";
 
@@ -27,13 +27,23 @@ interface NavItem {
   label: string;
   icon: typeof LayoutDashboard;
   hint: string;
+  localOnly?: boolean;
+  cloudLabel?: string;
+  cloudHint?: string;
 }
 
 const NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, hint: "System status" },
-  { to: "/analysis", label: "Video analysis", icon: Video, hint: "Upload & process" },
-  { to: "/live", label: "Live monitoring", icon: Monitor, hint: "Cameras" },
-  { to: "/zones", label: "Zone editor", icon: PenTool, hint: "Restricted areas" },
+  {
+    to: "/analysis",
+    label: "Video analysis",
+    icon: Video,
+    hint: "Upload & process",
+    cloudLabel: "Video uploads",
+    cloudHint: "Queue for your connector",
+  },
+  { to: "/live", label: "Live monitoring", icon: Monitor, hint: "Cameras", localOnly: true },
+  { to: "/zones", label: "Zone editor", icon: PenTool, hint: "Restricted areas", localOnly: true },
   { to: "/incidents", label: "Incidents", icon: ClipboardList, hint: "Review queue" },
   { to: "/settings", label: "Settings", icon: SettingsIcon, hint: "Devices & privacy" },
 ];
@@ -45,6 +55,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { mode, setMode } = useTheme();
   const location = useLocation();
   const { connected } = useEventStream(() => undefined);
+  const deployment = useDeployment();
+  const cloud = deployment.mode === "cloud";
+  const items = NAV.filter((item) => !(cloud && item.localOnly)).map((item) =>
+    cloud && item.cloudLabel
+      ? { ...item, label: item.cloudLabel, hint: item.cloudHint || item.hint }
+      : item,
+  );
 
   useEffect(() => {
     let active = true;
@@ -72,7 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const nav = (
     <nav className="flex flex-1 flex-col gap-0.5">
-      {NAV.map((item) => (
+      {items.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
@@ -97,15 +114,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex items-center justify-between text-[0.7rem] text-muted">
         <span className="inline-flex items-center gap-1.5">
           <Cpu size={12} />
-          {device ? device.device.toUpperCase() : "…"}
+          {cloud ? "VERCEL" : device ? device.device.toUpperCase() : "…"}
         </span>
-        <span className="inline-flex items-center gap-1.5" title={connected ? "Live updates connected" : "Live updates offline"}>
+        <span
+          className="inline-flex items-center gap-1.5"
+          title={
+            cloud
+              ? "Polling for updates (no long-lived connections in serverless)"
+              : connected
+                ? "Live updates connected"
+                : "Live updates offline"
+          }
+        >
           {connected ? <Wifi size={12} className="text-positive" /> : <WifiOff size={12} className="text-danger" />}
-          {connected ? "live" : "offline"}
+          {cloud ? "polling" : connected ? "live" : "offline"}
         </span>
       </div>
       <div className="flex items-center justify-between text-[0.7rem] text-muted">
-        <span className="truncate font-mono">{model || "model"}</span>
+        <span className="truncate font-mono">{cloud ? "local connector" : model || "model"}</span>
         <button
           type="button"
           onClick={nextMode}
@@ -116,7 +142,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </div>
       <p className="text-[0.65rem] leading-tight text-muted/80">
-        Local processing · v1.0 · human review required
+        {cloud
+          ? "Cloud dashboard · inference on your connector · human review required"
+          : "Local processing · v1.0 · human review required"}
       </p>
     </div>
   );

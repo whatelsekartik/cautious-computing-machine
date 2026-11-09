@@ -24,6 +24,10 @@ def _default_data_dir() -> Path:
     env = os.environ.get("CIVICWATCH_DATA_DIR")
     if env:
         return Path(env).expanduser().resolve()
+    # Serverless filesystems are read-only apart from /tmp. The repository is
+    # not writable there, so fall back to an ephemeral directory.
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return Path("/tmp/civicwatch")
     # backend/civicwatch/config.py -> repository root / data
     return (Path(__file__).resolve().parents[2] / "data").resolve()
 

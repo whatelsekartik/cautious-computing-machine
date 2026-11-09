@@ -8,6 +8,8 @@ data/
 .secrets/
 *.key
 .env
+# Connector URL + bearer token saved by "Start Cloud Connector.command"
+config/connector.env
 
 # Python
 .venv/
