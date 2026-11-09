@@ -1,0 +1,6 @@
+# Repository-root requirements are what Vercel installs for the Python
+# functions in api/. They contain the *cloud* dependency set only.
+#
+# Local macOS installs use backend/requirements.txt (which includes
+# torch/ultralytics/opencv) — the Setup launcher handles that automatically.
+-r backend/requirements-cloud.txt
